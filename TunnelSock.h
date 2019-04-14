@@ -3,6 +3,7 @@
 #include <cstdarg>
 #include <list>
 #include <map>
+#include <vector>
 using namespace std;
   
 #include <boost/shared_ptr.hpp>    
@@ -66,7 +67,7 @@ private:
     map<unsigned long, IClient*> m_MapSession;
     
 private:
-    list<IClient*>              m_ListTunnel;
+    vector<IClient*>              m_VectorTunnel;
 
 public:  
     CServer(int iPort);
@@ -75,7 +76,7 @@ public:
 
     void Accept();
 
-    void AcceptHandler(const boost::system::error_code& errorcode, CSocketPtr& sock);
+    void AcceptHandler(const boost::system::error_code& errorcode, /*CSocketPtr&*/CSocket* sock);
 
     int AsynWrite(unsigned long lSock, char *pBuf, int len);
     
@@ -89,7 +90,7 @@ public:
     
     IClient* GetTunnel(unsigned long lLocalSockID);
     
-    void RemoveTunnel();
+    void RemoveTunnel(IClient *pClient);
     
     void ClearSock(unsigned long lSock);
     
@@ -107,7 +108,7 @@ public:
     
     virtual int OnRecvServer(unsigned long lSockID, unsigned long lLocalSockID, const char *pBuf, int iLen, int iType);
     
-    virtual int OnRecvTunnel(unsigned long lLocalSockID, const char *pBuf, int iLen, int iType);
+    virtual int OnRecvTunnel(IClient *pClient, unsigned long lLocalSockID, const char *pBuf, int iLen, int iType);
     
     virtual void SetCallBack(IClient *pClient);
     

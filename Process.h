@@ -24,7 +24,7 @@ typedef struct
     int ID;
 }__attribute__ ((packed, aligned(1))) HeadPack;
 
-#define MAX_BUF_LEN   (1024*6)
+#define MAX_BUF_LEN   (1024*2)
 
 //typedef boost::mutex::scoped_lock CAutoLock;
 
@@ -56,7 +56,8 @@ class CNetBuf
     bool m_bTransferState;
     size_t m_byteSend;
     
-    CSocketPtr  m_sock;
+//    CSocketPtr  m_sock;
+    CSocket *m_pSock;
    
     
  public:
@@ -71,6 +72,7 @@ class CNetBuf
          for (; ite!=m_ListSend.end(); ite++)
              delete (*ite);
          m_ListSend.clear();
+         delete m_pSock;
      }
      
      void SetStreamByteSend(size_t byteSend)
@@ -97,9 +99,9 @@ class CNetBuf
          return m_bTransferState;
      }
      
-     void SetSock(CSocketPtr sock){m_sock = sock;}
+     void SetSock(CSocket* pSock){m_pSock = pSock;}
      
-     CSocketPtr &GetSock(){return m_sock;}
+     CSocket *GetSock(){return m_pSock;}
      
      void SetSockID(unsigned long lSockID)
      {
@@ -248,7 +250,7 @@ public:
     
     virtual int SendToTunnel(unsigned long lSock, int index, char *pBuf, int iLen) = 0;
     
-    virtual int OnRecvTunnel(unsigned long lLocalSockID, const char *pBuf, int iLen, int iType) = 0;
+    virtual int OnRecvTunnel(IClient *pClient, unsigned long lLocalSockID, const char *pBuf, int iLen, int iType) = 0;
 };
 
 

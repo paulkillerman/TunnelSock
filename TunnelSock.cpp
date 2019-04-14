@@ -60,7 +60,8 @@ CServer::CServer(int iPort) : oAcceptor(oIoSrv, CEndPt(ip::tcp::v4(), iPort)),m_
 {
     Accept();
     
-    CreateTunnel();
+    for (int i=0; i< 10; i++)
+        CreateTunnel();
 }
 
 void CServer::Run()
@@ -71,11 +72,12 @@ void CServer::Run()
 
 void CServer::Accept()  
 {  
-    CSocketPtr poSock(new CSocket(oIoSrv));  
-    oAcceptor.async_accept(*poSock, boost::bind(&CServer::AcceptHandler, this, boost::asio::placeholders::error, poSock));  
+//    CSocketPtr poSock(new CSocket(oIoSrv));  
+    CSocket *pSock = new CSocket(oIoSrv);
+    oAcceptor.async_accept(/**poSock*/*pSock, boost::bind(&CServer::AcceptHandler, this, boost::asio::placeholders::error, pSock/*poSock*/));  
 }  
 
-void CServer::AcceptHandler(const boost::system::error_code& errorcode, CSocketPtr& sock)  
+void CServer::AcceptHandler(const boost::system::error_code& errorcode, CSocket*/*CSocketPtr&*/ pSock)  
 {  
     if(errorcode)
     {
@@ -89,15 +91,15 @@ void CServer::AcceptHandler(const boost::system::error_code& errorcode, CSocketP
         CAutoLock lock(m_MutexBuf);
         lSockID++;
         pNetBuf->SetSockID(lSockID);
-        pNetBuf->SetSock(sock);
+        pNetBuf->SetSock(pSock);
         m_MapNetBuf[lSockID] = pNetBuf;
     }
 
     int iSize = 0;
     char *pRecvBuf = pNetBuf->GetRecvFreeBuf(iSize);
-    sock->async_read_some(buffer(pRecvBuf, iSize), boost::bind(&CServer::ReadHandler, this, boost::asio::placeholders::error,
+    pSock->async_read_some(buffer(pRecvBuf, iSize), boost::bind(&CServer::ReadHandler, this, boost::asio::placeholders::error,
             boost::asio::placeholders::bytes_transferred, lSockID));  
-    ConsoleOutput(false, "RemoteClient : %s\n", sock->remote_endpoint().address().to_string().c_str());
+    ConsoleOutput(false, "RemoteClient : %s\n", pSock->remote_endpoint().address().to_string().c_str());
 
     Accept();/*发送完毕后继续监听，否则io_service将认为没有事件处理而结束运行  */
 }
@@ -120,26 +122,40 @@ IClient* CServer::GetTunnel(unsigned long lLocalSockID)
     IClient *pClient = NULL;
     
     CAutoLock Lock(m_MutexSession);
-    list<IClient*>::iterator ite = m_ListTunnel.begin();
-    if (ite != m_ListTunnel.end())
-        pClient = (*ite);
+    unsigned int nTunnel = m_VectorTunnel.size();
+    if (nTunnel == 0)
+        return NULL;
+    
+    int index = lLocalSockID % nTunnel;
+    
+    if (m_VectorTunnel[index] == NULL)
+    {
+        index += 1;
+        index = index % nTunnel;
+        pClient = m_VectorTunnel[index];
+    }
     else
+        pClient = m_VectorTunnel[index];
+    
+    if (NULL == pClient)
     {
         ConsoleOutput(true, "Error no tunnel!Create it.\n");
-        CreateTunnel();
     }
+    
+    ConsoleOutput(true, "CServer::GetTunnel index=%d \n", index);
     
     return pClient;
 }
     
-void CServer::RemoveTunnel()
+void CServer::RemoveTunnel(IClient *pClient)
 {
     CAutoLock Lock(m_MutexSession);
-    list<IClient*>::iterator iteTunnel = m_ListTunnel.begin();
-    for (;iteTunnel!=m_ListTunnel.end(); iteTunnel++)
+    for (int i=0; i<m_VectorTunnel.size(); i++)
     {
-        m_ListTunnel.erase(iteTunnel);
-        break;
+        if (m_VectorTunnel[i] == pClient)
+        {
+            m_VectorTunnel[i] = NULL;
+        }
     }
 }
 
@@ -169,6 +185,17 @@ void CServer::ClearSock(unsigned long lSock)
    if (ite != m_MapNetBuf.end())
    {
        CNetBuf *pNetBuf = (*ite).second;
+       if (pNetBuf)
+       {
+            CSocket *pSock = pNetBuf->GetSock();
+            if (pSock->is_open())
+            {               
+                boost::system::error_code ec;
+                pSock->shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
+                pSock->close();
+            }
+       }
+       
        delete pNetBuf;
        m_MapNetBuf.erase(ite);
    }       
@@ -200,8 +227,8 @@ int CServer::AsynWrite(unsigned long lSock, char *pBuf, int len)
         asio::streambuf *pSB = pNetBuf->GetSendBuf();
 
         pNetBuf->SetStreamByteSend(pSB->size());
-        CSocketPtr &Sock = pNetBuf->GetSock();
-        Sock->async_write_some(buffer(pSB->data(), pSB->size()), bind(&CServer::WriteHandler, this,
+        CSocket *pSock = pNetBuf->GetSock();
+        pSock->async_write_some(buffer(pSB->data(), pSB->size()), bind(&CServer::WriteHandler, this,
                 boost::asio::placeholders::error,
                 boost::asio::placeholders::bytes_transferred, lSock, pSB));
     }
@@ -211,25 +238,28 @@ int CServer::AsynWrite(unsigned long lSock, char *pBuf, int len)
 
 void CServer::WriteHandler(const boost::system::error_code& errorcode, size_t bytes_transferred, unsigned long lSock, asio::streambuf *pSB)
 {
+    CNetBuf *pNetBuf = GetNetBuf(lSock);
+    
     if (errorcode)
     {
-       ConsoleOutput(false, "Send client %d  %s\n", bytes_transferred, errorcode.message().c_str());
-//       ClearSock(lSock);
+        ConsoleOutput(false, "Send client %d  %s\n", bytes_transferred, errorcode.message().c_str());
+        if (!g_IsServer && pNetBuf)
+            m_Process.ProcessLocal(pNetBuf->GetSockID(), "", 0);//无内容表示断开
+       ClearSock(lSock);
        return;
     }
 //        ConsoleOutput(false, "Send client %d complete\n", bytes_transferred);
     
-    CNetBuf *pNetBuf = GetNetBuf(lSock);
     if (pNetBuf == NULL) return; //error
 
-    CSocketPtr &Sock = pNetBuf->GetSock();
+    CSocket *pSock = pNetBuf->GetSock();
     size_t byteSend = pNetBuf->GetStreamByteSend();
     if (bytes_transferred < byteSend)
     {
         size_t byteLeft = byteSend - bytes_transferred;
         pNetBuf->SetStreamByteSend(byteLeft);
 
-        Sock->async_write_some(buffer(pSB->data() + (pSB->size() - byteLeft), byteLeft), bind(&CServer::WriteHandler, this,
+        pSock->async_write_some(buffer(pSB->data() + (pSB->size() - byteLeft), byteLeft), bind(&CServer::WriteHandler, this,
             boost::asio::placeholders::error,
             boost::asio::placeholders::bytes_transferred, lSock, pSB));
 
@@ -240,12 +270,8 @@ void CServer::WriteHandler(const boost::system::error_code& errorcode, size_t by
         pNetBuf->Recycle(pSB);
 
 //        asio::streambuf *pSBNext = pNetBuf->GetSendBuf();
-
-
-
         asio::streambuf *pSBNext = NULL;
 		pSBNext = pNetBuf->GetSendBuf();
-
 
 		if (g_IsServer)
 		{
@@ -274,11 +300,10 @@ void CServer::WriteHandler(const boost::system::error_code& errorcode, size_t by
 		}
 
         
-
         if (pSBNext != NULL)
         {
             pNetBuf->SetStreamByteSend(pSBNext->size());
-            Sock->async_write_some(buffer(pSBNext->data(), pSBNext->size()), bind(&CServer::WriteHandler, this,
+            pSock->async_write_some(buffer(pSBNext->data(), pSBNext->size()), bind(&CServer::WriteHandler, this,
                 boost::asio::placeholders::error,
                 boost::asio::placeholders::bytes_transferred, lSock, pSBNext));   
         }
@@ -292,25 +317,26 @@ void CServer::WriteHandler(const boost::system::error_code& errorcode, size_t by
 
 void CServer::ReadHandler(const boost::system::error_code& errorcode, std::size_t bytes_transferred, unsigned long lSock)
 {  
+    CNetBuf *pNetBuf = NULL;
+    pNetBuf = GetNetBuf(lSock);
+        
     if(errorcode)
     {
         ConsoleOutput(true, "Server ReadHandler error %s\n", errorcode.message().c_str());
-        if (!g_IsServer)
+        if (NULL != pNetBuf)
         {
-            CNetBuf *pNetBuf = NULL;
-            pNetBuf = GetNetBuf(lSock);
-            if (NULL != pNetBuf)
-                m_Process.ProcessLocal(pNetBuf->GetSockID(), "", 0);//无内容表示断开
+            ConsoleOutput(true, "Server ReadHandler error %d id=%d\n", errorcode.value(), pNetBuf->GetSockID());
+//            if (!g_IsServer)
+//                m_Process.ProcessLocal(pNetBuf->GetSockID(), "", 0);//无内容表示断开
         }
         
-        ClearSock(lSock);
+//        ClearSock(lSock);
         return;
     }
     
-    CNetBuf *pNetBuf = GetNetBuf(lSock);
     if (NULL == pNetBuf) return; //error
 
-    CSocketPtr &Sock = pNetBuf->GetSock();
+    CSocket * pSock = pNetBuf->GetSock();
     pNetBuf->SetRecvBuf(bytes_transferred);
 
     if (g_IsServer)     //Working on server mode
@@ -334,9 +360,19 @@ void CServer::ReadHandler(const boost::system::error_code& errorcode, std::size_
                             RemoveServer(pHead->ID);
                         }
                         else
-                            m_Process.ProcessClient(pNetBuf->GetSockID(), pHead->ID, pAllBuf+sizeof(HeadPack), pHead->iSize-sizeof(HeadPack));
+                        {
+                            if (pHead->ID>=0 && pHead->iSize>0 && pHead->iSize<= MAX_BUF_LEN)
+                                m_Process.ProcessClient(pNetBuf->GetSockID(), pHead->ID, pAllBuf+sizeof(HeadPack), pHead->iSize-sizeof(HeadPack));
+                        }
                     }
-
+                    
+                    if (pHead->iSize < 0 || pHead->iSize > MAX_BUF_LEN)
+                    {
+                        ConsoleOutput(false, "CServer::ReadHandler Head error pHead->ID=%d pHead->iSize=%d\n", pHead->ID,pHead->iSize);
+                        ClearSock(lSock);
+                        return;
+                    }
+                    
                     pNetBuf->ClearRecvBuf(pHead->iSize);
                 }
                 else
@@ -362,10 +398,6 @@ void CServer::ReadHandler(const boost::system::error_code& errorcode, std::size_
                 ConsoleOutput(false, "m_Process.ProcessLocal SockID=%d len=%d \n", pNetBuf->GetSockID(), iRecvSize);
                 iRecvSize = iRecvSize>(MAX_BUF_LEN-sizeof(HeadPack)) ? (MAX_BUF_LEN-sizeof(HeadPack)):iRecvSize;
                 
-        //        if (10 == iRecvSize)
-        //        for (int i=0; i<10; i++)
-        //            ConsoleOutput(false, " %d \n", pAllBuf[i]);
-                
                 m_Process.ProcessLocal(pNetBuf->GetSockID(), pAllBuf, iRecvSize);
                 pNetBuf->ClearRecvBuf(iRecvSize);//
             }
@@ -380,11 +412,10 @@ void CServer::ReadHandler(const boost::system::error_code& errorcode, std::size_
      char *pBufFree = pNetBuf->GetRecvFreeBuf(iSizeFree);
      if (iSizeFree > 0)
      {
-         Sock->async_read_some(buffer(pBufFree, iSizeFree), boost::bind(&CServer::ReadHandler, this,
+         pSock->async_read_some(buffer(pBufFree, iSizeFree), boost::bind(&CServer::ReadHandler, this,
              boost::asio::placeholders::error,
              boost::asio::placeholders::bytes_transferred, lSock));
      }
-
 }
 
 int CServer::SendToClient(unsigned long lSock, int index, char *pBuf, int iLen)
@@ -400,30 +431,7 @@ int CServer::SendToServer(unsigned long lSock, int index, char *pBuf, int iLen)
        pClient = GetServerPtr(index);
     else
         pClient = GetServerPtr(lSock);
-    /*
-    if (g_IsServer)
-    {
-        CAutoLock Lock(m_MutexSession);
-        list<IClient*> & lClient = m_MapTunnel2Server[lSock];
-        for (list<IClient*>::iterator ite = lClient.begin(); ite!=lClient.end(); ite++)
-        {
-            unsigned long uLocalSockID = 0;
-            (*ite)->GetSockID(uLocalSockID);
-            if (uLocalSockID == index)
-            {
-                pClient = (*ite);
-                break;
-            }
-        }
-    }
-    else
-    {
-        CAutoLock Lock(m_MutexSession);
-        map<unsigned long, IClient*>::iterator ite = m_MapSession.find(lSock);
-        if (ite != m_MapSession.end())
-            pClient = ite->second;
-    }
-*/
+ 
     if (pClient == NULL)    //error
         return -1;
 
@@ -511,15 +519,15 @@ int CServer::OnRecvServer(unsigned long lSockID, unsigned long lLocalSockID, con
     return 0;
 }
 
-int CServer::OnRecvTunnel(unsigned long lLocalSockID, const char *pBuf, int iLen, int iType)
+int CServer::OnRecvTunnel(IClient *pClient, unsigned long lLocalSockID, const char *pBuf, int iLen, int iType)
 {
     switch (iType)
     {
         case -2:
         {
-           RemoveTunnel();
+           RemoveTunnel(pClient);
             ConsoleOutput(true, "Tunnel closed!\n");
-
+            CreateTunnel();
    //             thread oServerThread(ServerAccept, g_uServerlPort);//启动服务器线程
    //             oServerThread.detach();
         }
@@ -527,7 +535,7 @@ int CServer::OnRecvTunnel(unsigned long lLocalSockID, const char *pBuf, int iLen
 
         case -1:
         {
-           RemoveTunnel();
+           RemoveTunnel(pClient);
             ConsoleOutput(true, "Construct tunnel failed!\n");
 
     //        thread oServerThread(ServerAccept, g_uServerlPort);//启动服务器线程
@@ -558,7 +566,7 @@ int CServer::OnRecvTunnel(unsigned long lLocalSockID, const char *pBuf, int iLen
                 if (NULL == pNetBuf)
                     return 0;
                 
-                CSocketPtr Sock = pNetBuf->GetSock();
+                CSocket * Sock = pNetBuf->GetSock();
                 if (Sock->is_open())
                 {
                     boost::system::error_code ec;
@@ -588,7 +596,20 @@ void CServer::SetCallBack(IClient *pClient)
 void CServer::SetTunnelCallBack(IClient *pClient)
 {
     CAutoLock Lock(m_MutexSession);
-    m_ListTunnel.push_back(pClient);
+    bool bInsert = false;
+    int i = 0;
+    for (i=0; i<m_VectorTunnel.size(); i++)
+    {
+        if (m_VectorTunnel[i] == NULL)
+        {
+            bInsert = true;
+            m_VectorTunnel[i] = pClient;
+            break;
+        }
+    }
+    
+    if (!bInsert)
+        m_VectorTunnel.push_back(pClient);
 }
 
 

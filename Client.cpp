@@ -265,7 +265,7 @@ void CTunnel::Run()
 {
     m_pServer->SetTunnelCallBack(this);
     m_oIoSrv.run();
-    m_pServer->OnRecvTunnel(0, NULL, 0, -2);
+    m_pServer->OnRecvTunnel(this, 0, NULL, 0, -2);
 }
 
 void CTunnel::Start()
@@ -279,11 +279,11 @@ void CTunnel::ConnHandler(const boost::system::error_code& errorcode)
 {
     if(errorcode)
     {
-        m_pServer->OnRecvTunnel(0, NULL, 0, -1);
+        m_pServer->OnRecvTunnel(this, 0, NULL, 0, -1);
         return;
     }
 
-    m_pServer->OnRecvTunnel(0, m_Sock.remote_endpoint().address().to_string().c_str(), 
+    m_pServer->OnRecvTunnel(this, 0, m_Sock.remote_endpoint().address().to_string().c_str(), 
             m_Sock.remote_endpoint().port(), 1);
 
     m_offsetRead = 0;
@@ -296,7 +296,7 @@ void CTunnel::ReadHandler(const boost::system::error_code& errorcode, std::size_
 {
     if(errorcode)
     {
-        m_pServer->OnRecvTunnel(0, NULL, 0, -2);
+        m_pServer->OnRecvTunnel(this, 0, NULL, 0, -2);
         return;
     }
 
@@ -310,7 +310,7 @@ void CTunnel::ReadHandler(const boost::system::error_code& errorcode, std::size_
         if ((m_offsetRead-indexRead) >= pHead->iSize)
         {
 //            if (pHead->ID >= 0)
-                m_pServer->OnRecvTunnel(pHead->ID, &m_pBuffer[indexRead]+sizeof(HeadPack), pHead->iSize - sizeof(HeadPack), 0);
+                m_pServer->OnRecvTunnel(this, pHead->ID, &m_pBuffer[indexRead]+sizeof(HeadPack), pHead->iSize - sizeof(HeadPack), 0);
             indexRead += pHead->iSize;
 //            ConsoleOutput(true, "CTunnel::ReadHandler sockID=%d m_offsetRead = %d bytes_transferred=%d indexRead=%d\n", pHead->ID, m_offsetRead, bytes_transferred,indexRead);
         }
