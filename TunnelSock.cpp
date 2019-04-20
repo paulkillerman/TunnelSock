@@ -56,6 +56,13 @@ void CServer::CreateTunnel()
     }
 }
 
+CServer::~CServer()
+{
+    CAutoLock lock(m_MutexFreeBuf);
+    for (list<CNetBuf*>::iterator  ite = m_ListFreeNetBuf.begin(); ite!=m_ListFreeNetBuf.end(); ite++)
+            delete (*ite);
+}
+
 CServer::CServer(int iPort) : oAcceptor(oIoSrv, CEndPt(ip::tcp::v4(), iPort)),m_Process(this)
 {
     Accept();
@@ -86,7 +93,19 @@ void CServer::AcceptHandler(const boost::system::error_code& errorcode, CSocket*
     }
 
     static unsigned long lSockID = 0;
-    CNetBuf *pNetBuf = new CNetBuf;
+    CNetBuf *pNetBuf = NULL;
+    {
+        CAutoLock lock(m_MutexFreeBuf);
+        if (m_ListFreeNetBuf.size() > 0)
+        {
+            list<CNetBuf*>::iterator  ite = m_ListFreeNetBuf.begin();
+            pNetBuf = (*ite);
+            m_ListFreeNetBuf.pop_front();
+        }
+        if (NULL == pNetBuf)
+            pNetBuf = new CNetBuf;
+    }
+    
     {
         CAutoLock lock(m_MutexBuf);
         lSockID++;
@@ -196,7 +215,14 @@ void CServer::ClearSock(unsigned long lSock)
             }
        }
        
-       delete pNetBuf;
+//       delete pNetBuf;
+       
+       {
+           CAutoLock lock(m_MutexFreeBuf);
+           m_ListFreeNetBuf.push_back(pNetBuf);
+       }
+       
+       
        m_MapNetBuf.erase(ite);
    }       
 }
@@ -369,7 +395,12 @@ void CServer::ReadHandler(const boost::system::error_code& errorcode, std::size_
                     if (pHead->iSize < 0 || pHead->iSize > MAX_BUF_LEN)
                     {
                         ConsoleOutput(false, "CServer::ReadHandler Head error pHead->ID=%d pHead->iSize=%d\n", pHead->ID,pHead->iSize);
-                        ClearSock(lSock);
+                        if (pSock && pSock->is_open())
+                        {
+                            boost::system::error_code ec;
+                            pSock->shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
+                            pSock->close();
+                        }
                         return;
                     }
                     
@@ -566,12 +597,12 @@ int CServer::OnRecvTunnel(IClient *pClient, unsigned long lLocalSockID, const ch
                 if (NULL == pNetBuf)
                     return 0;
                 
-                CSocket * Sock = pNetBuf->GetSock();
-                if (Sock->is_open())
+                CSocket * pSock = pNetBuf->GetSock();
+                if (pSock && pSock->is_open())
                 {
                     boost::system::error_code ec;
-                    Sock->shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
-                    Sock->close();
+                    pSock->shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
+                    pSock->close();
                 }
             }
         }

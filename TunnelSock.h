@@ -51,7 +51,7 @@ class CServer : public IServer
     typedef ip::address CAddr;  
     typedef boost::shared_ptr<CSocket> CSocketPtr;  
 
-    typedef list<asio::streambuf*> BufList;
+//    typedef list<asio::streambuf*> BufList;
     
 private:    
     io_service oIoSrv;  
@@ -59,12 +59,14 @@ private:
     
     CMutex m_MutexBuf;
     CMutex  m_MutexSession;
+    CMutex m_MutexFreeBuf;
     
 private:
     CProcess m_Process;
     
     map<unsigned long, CNetBuf*> m_MapNetBuf;
     map<unsigned long, IClient*> m_MapSession;
+    list<CNetBuf*>               m_ListFreeNetBuf;
     
 private:
     vector<IClient*>              m_VectorTunnel;
@@ -72,6 +74,8 @@ private:
 public:  
     CServer(int iPort);
 
+    ~CServer();
+    
     void Run();
 
     void Accept();

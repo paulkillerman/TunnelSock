@@ -73,6 +73,10 @@ class CNetBuf
              delete (*ite);
          m_ListSend.clear();
          delete m_pSock;
+         
+         BufList::iterator iteR = m_ListRecycle.begin();
+         for (; iteR!=m_ListRecycle.end(); iteR++)
+             delete (*iteR);
      }
      
      void SetStreamByteSend(size_t byteSend)
